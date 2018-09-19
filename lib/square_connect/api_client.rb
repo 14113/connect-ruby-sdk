@@ -11,7 +11,7 @@ require 'date'
 require 'json'
 require 'logger'
 require 'tempfile'
-require 'typhoeus'
+require 'faraday'
 require 'uri'
 
 module SquareConnect
@@ -48,26 +48,17 @@ module SquareConnect
     # @return [Array<(Object, Fixnum, Hash)>] an array of 3 elements:
     #   the data deserialized from response body (could be nil), response status code and response headers.
     def call_api(http_method, path, opts = {})
-      request = build_request(http_method, path, opts)
-      response = request.run
+      response = build_request(http_method, path, opts)
 
       if @config.debugging
         @config.logger.debug "HTTP response body ~BEGIN~\n#{response.body}\n~END~\n"
       end
 
       unless response.success?
-        if response.timed_out?
-          fail ApiError.new('Connection timed out')
-        elsif response.code == 0
-          # Errors from libcurl will be made visible here
-          fail ApiError.new(:code => 0,
-                            :message => response.return_message)
-        else
-          fail ApiError.new(:code => response.code,
-                            :response_headers => response.headers,
-                            :response_body => response.body),
-               "#{response.status_message} - #{response.body}"
-        end
+        error = deserialize(response, "ApiError")
+        error.code = response.status
+        error.response_headers = response.headers
+        fail error
       end
 
       if opts[:return_type]
@@ -75,7 +66,7 @@ module SquareConnect
       else
         data = nil
       end
-      return data, response.code, response.headers
+      return data, response.status, response.headers
     end
 
     # Builds the HTTP request
@@ -130,8 +121,7 @@ module SquareConnect
           @config.logger.debug "HTTP request body param ~BEGIN~\n#{req_body}\n~END~\n"
         end
       end
-
-      Typhoeus::Request.new(url, req_opts)
+      Faraday.new(url).run_request(http_method, url, req_body, header_params)
     end
 
     # Check if the given MIME is a JSON MIME.
